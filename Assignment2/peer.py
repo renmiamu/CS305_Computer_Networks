@@ -1,4 +1,4 @@
-
+import math
 import socket, threading, argparse, os, json, time, struct, random, zlib
 
 # --- Constants ---
@@ -48,11 +48,24 @@ def load_config():
         return json.load(f)
 
 # --- Listener and Packet Receiver (TODO)---
+#peer_id: 当前节点的标识符
+#peers: 用于存储节点信息的字典
 def listen(peer_id, ip, port, peers):
     # TODO: Create a UDP socket, bind it, and listen for incoming packets
-    pass
+    udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    server_address = (ip, port)
+    udp_socket.bind(server_address)
+    print(f"节点 {peer_id} 正在监听 {ip}:{port}")
+    #接收数据
+    while True:
+        data, address = udp_socket.recvfrom(1024)
+        message = json.loads(data.decode('utf-8'))
+        sender_id = message.get('peer_id')
+        if (sender_id not in peers and sender_id != peer_id):
+            peers[sender_id] =[ip, port]
 
 def handle_packet(data, addr, peer_id, peers):
+    header, payload = parse_packet(data)
 
     # Simulating packet drop
     if random.random() < DROP_PROBABILITY:
@@ -70,11 +83,23 @@ def handle_packet(data, addr, peer_id, peers):
         # First,
             ## Check the validity of the received packets based on checksum
             ## Drop the packets if TTL is reached
+    if header["checksum"] != zlib.crc32(payload) & 0xffffffff:
+        print("checksum error")
+        return
+
+    if header["ttl"]<=0:
+        print("ttl reached")
+        return
+
+    header["ttl"]-=1
 
         # Second, if the packet is received correctly and peer_id is the destination, then
             ## If the packet type is DATA, record the payload and reply to the sender with an ACK
             ## If the packet type is ACK, record the ACK 
             ## If the packet type is DV, implement the handle_dv_update function to update the local DV
+    if header["dst"]==peer_id:
+        if header["type"]=="DATA":
+
 
         # If the packet is received correctly and peer_id is not the destination, then
             ## Forward the packet to the next hop or drop the packet if TTL is reached
@@ -84,10 +109,41 @@ def handle_packet(data, addr, peer_id, peers):
 def send_file(peer_id, dst_id, filename, peers):
     # TODO: Segment the file and send using sliding window
     # TODO: Print out the information that all segments have been sent successfully
+    # 读取文件内容
+    with open(filename, 'rb') as f:
+        file_data = f.read()
+    file_size = len(file_data)
+    total_segments = math.ceil(file_size / SEGMENT_SIZE)
+
+    print(f"开始发送文件 {filename} (大小: {file_size} 字节, 共 {total_segments} 段)")
+
+
     pass
 
 def send_segment(peer_id, dst_id, segment, seq, peers, is_retry=False, total=-1):
     # TODO: Send a segment to the next hop using the local DV
+    next_hop=get_next_hop(peer_id, peers[peer_id])
+    packet = make_packet(
+        pkt_type="DATA",
+        seq=seq,
+        total=total,
+        src=peer_id,
+        dst=dst_id,
+        ttl=10,
+        payload=segment
+    )
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.sendto(packet, next_hop)
+    sock.close()
+
+    if not is_retry:
+        with lock:
+            unacked_segments[seq] = (time.time(), packet)
+            retry_counts[seq] = 0
+    else:
+        retry_counts[seq]+=1
+
+
     pass
 
 # --- Segment Retransmission ---
@@ -107,6 +163,18 @@ def reassemble_file(peer_id):
 
 def send_ack(dst, src, seq, peers):
     # TODO: Send ACK back to source for correctly-received segment
+    ack_packet=make_packet(
+        pkt_type="ACK",
+        seq=seq,
+        total=1,
+        src=src,
+        dst=dst,
+        ttl=10,
+        payload=b"ACK"
+    )
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.sendto(ack_packet, peers[dst])
+    sock.close()
     pass
 
 # --- Distance Vector Routing ---
@@ -125,6 +193,7 @@ def routes_print(peer_id):
 
 def get_next_hop(peer_id, dst):
     # TODO: Lookup the next hop for a given destination based on the local DV
+
     pass
 
 def cost_update_thread(peer_id, peers):
