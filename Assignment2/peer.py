@@ -99,12 +99,7 @@ def handle_packet(data, addr, peer_id, peers):
             ## If the packet type is DV, implement the handle_dv_update function to update the local DV
     if header["dst"]==peer_id:
         if header["type"]=="DATA":
-            #多线程环境下对reassembly_buffers安全访问
-            with lock:
-                if header["src"] not in reassembly_buffers:
-                    reassembly_buffers[header["src"]] = []
-                reassembly_buffers[header["src"]][header["seq"]] = payload
-                reassembly_expected[header["src"]]=header["total"]
+            store_segment(peer_id, header, payload)
             send_ack(header["src"],peer_id,header["seq"],peers)
             print(f"[{peer_id}] 已发送ACK确认seq={header['seq']}")
 
@@ -187,9 +182,6 @@ def send_segment(peer_id, dst_id, segment, seq, peers, is_retry=False, total=-1)
     else:
         retry_counts[seq]+=1
 
-
-    pass
-
 # --- Segment Retransmission ---
 def ack_timekeeping(peer_id, dst_id, segment, seq, peers, total):
     # TODO: Create a timer to calculate the time to receive a segment's ACK
@@ -199,11 +191,51 @@ def ack_timekeeping(peer_id, dst_id, segment, seq, peers, total):
 # --- Segment Reception, Reassembly and ACK ---
 def store_segment(peer_id, header, payload):
     # TODO: Store the received segment and trigger reassembly if complete
-    pass
+    # 多线程环境下对reassembly_buffers安全访问
+    with lock:
+        if header["src"] not in reassembly_buffers:
+            reassembly_buffers[header["src"]] = {}
+            reassembly_expected[header["src"]] = header["total"]
+        reassembly_buffers[header["src"]][header["seq"]] = payload
+
+        if len(reassembly_buffers[header["src"]])==header["total"]:
+            print(f"[{peer_id}] 所有分片接收完成，准备重组文件")
+            reassemble_file(peer_id)  # 触发重组
+
 
 def reassemble_file(peer_id):
     # TODO: Write reassembled segments into a file, namely 'received_file.txt', and store it in the peer's folder.
-    pass
+    try:
+        with lock:
+            #检查是否存在该发送方的分片数据
+            if peer_id not in reassembly_buffers:
+                print(f"[重组错误] 未找到 {peer_id} 的分片缓存")
+                return
+            total_expected = reassembly_expected[peer_id]
+            received_segments = reassembly_buffers[peer_id]
+            received_count = len(received_segments)
+            #验证完整性
+            if received_count != total_expected:
+                print(f"[重组警告] {peer_id} 的分片不完整（收到{received_count}/{total_expected}）")
+                return
+            #按序列号排序
+            sorted_segments = sorted(received_segments.items(), key=lambda x: x[0])
+            #合并数据
+            file_data=b""
+            for seq, data in sorted_segments:
+                file_data += data
+            os.makedirs(RECV_DIR, exist_ok=True)
+            filename="received_file.txt"
+            filepath = os.path.join(RECV_DIR, filename)
+            #写入数据
+            with open(filepath, "wb") as f:
+                f.write(file_data)
+            print(f"[重组成功] 已保存 {filepath} （大小: {len(file_data)} 字节）")
+            #清理缓存
+            del reassembly_buffers[peer_id]
+            del reassembly_expected[peer_id]
+    except Exception as e:
+        print(f"[重组错误] 处理 {peer_id} 的文件时出错: {str(e)}")
 
 def send_ack(dst, src, seq, peers):
     # TODO: Send ACK back to source for correctly-received segment
