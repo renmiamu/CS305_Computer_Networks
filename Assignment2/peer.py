@@ -99,11 +99,55 @@ def handle_packet(data, addr, peer_id, peers):
             ## If the packet type is DV, implement the handle_dv_update function to update the local DV
     if header["dst"]==peer_id:
         if header["type"]=="DATA":
+            #多线程环境下对reassembly_buffers安全访问
+            with lock:
+                if header["src"] not in reassembly_buffers:
+                    reassembly_buffers[header["src"]] = []
+                reassembly_buffers[header["src"]][header["seq"]] = payload
+                reassembly_expected[header["src"]]=header["total"]
+            send_ack(header["src"],peer_id,header["seq"],peers)
+            print(f"[{peer_id}] 已发送ACK确认seq={header['seq']}")
+
+        if header["type"]=="ACK":
+            with lock:
+                if header["seq"] in unacked_segments:
+                    del unacked_segments[header["seq"]]
+                    print(f"[{peer_id}] 收到seq={header['seq']}的ACK确认")
+
+        # if header["type"]=="DV":
+
+    else:
+        # 5. 需要转发的数据包
+        print(f"[{peer_id}] 转发目标为{header['dst']}的数据包")
+        next_hop = get_next_hop(peer_id, peers["dst"])
+        if next_hop and header["ttl"]>0:
+            print(f"[{peer_id}] 转发目标为{header['dst']}的数据包")
+            next_hop = get_next_hop(peer_id, header["dst"])
+            if next_hop and header["ttl"] > 0:
+                # 构造新数据包（更新TTL后）
+                new_packet = make_packet(
+                    pkt_type=header["type"],
+                    seq=header["seq"],
+                    total=header["total"],
+                    src=header["src"],
+                    dst=header["dst"],
+                    ttl=header["ttl"],
+                    payload=payload
+                )
+                # 转发到下一跳
+                sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                sock.sendto(new_packet, next_hop)
+                sock.close()
+                print(f"[{peer_id}] 已转发数据包到 {next_hop}")
+            else:
+                print(f"[{peer_id}] 无可用路由或TTL不足，丢弃数据包")
+
+
+
 
 
         # If the packet is received correctly and peer_id is not the destination, then
             ## Forward the packet to the next hop or drop the packet if TTL is reached
-    pass
 
 # --- File Transmission (TODO)---
 def send_file(peer_id, dst_id, filename, peers):
@@ -175,7 +219,6 @@ def send_ack(dst, src, seq, peers):
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.sendto(ack_packet, peers[dst])
     sock.close()
-    pass
 
 # --- Distance Vector Routing ---
 def handle_dv_update(peer_id, neighbor, dv_data, peers):
