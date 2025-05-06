@@ -157,8 +157,6 @@ def send_file(peer_id, dst_id, filename, peers):
     print(f"开始发送文件 {filename} (大小: {file_size} 字节, 共 {total_segments} 段)")
 
 
-    pass
-
 def send_segment(peer_id, dst_id, segment, seq, peers, is_retry=False, total=-1):
     # TODO: Send a segment to the next hop using the local DV
     next_hop=get_next_hop(peer_id, peers[peer_id])
@@ -179,14 +177,34 @@ def send_segment(peer_id, dst_id, segment, seq, peers, is_retry=False, total=-1)
         with lock:
             unacked_segments[seq] = (time.time(), packet)
             retry_counts[seq] = 0
-    else:
-        retry_counts[seq]+=1
 
 # --- Segment Retransmission ---
 def ack_timekeeping(peer_id, dst_id, segment, seq, peers, total):
     # TODO: Create a timer to calculate the time to receive a segment's ACK
     # TODO: Resend the segment if its ACK is not received before timeout.
-    pass
+    retry_count = retry_counts[seq]
+    ack_received = False
+    while not ack_received and retry_count < MAX_RETRIES:
+        #发送时间
+        send_time=time.time()
+        # 发送数据段（首次发送或重传）
+        send_segment(peer_id, dst_id, segment, seq, peers, is_retry=(retry_count > 0), total=total)
+        #等待ack
+        while time.time() - send_time < ACK_TIMEOUT:
+            with lock:
+                if seq not in unacked_segments:
+                    ack_received = True
+                    break
+            time.sleep(0.01)  # 避免忙等待
+            retry_count += 1
+            with lock:
+                retry_counts[seq] = retry_count
+                print(f"[{peer_id}] 段 {seq}/{total} 超时 (重试 {retry_count}/{MAX_RETRIES})")
+    with lock:
+        if seq in unacked_segments:
+            del unacked_segments[seq]
+    print(f"[{peer_id}] 错误: 段 {seq}/{total} 达到最大重试次数")
+    return ack_received
 
 # --- Segment Reception, Reassembly and ACK ---
 def store_segment(peer_id, header, payload):
