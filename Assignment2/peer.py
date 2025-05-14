@@ -110,6 +110,8 @@ def handle_packet(data, addr, peer_id, peers):
                     print(f"[{peer_id}] 收到seq={header['seq']}的ACK确认")
 
         # if header["type"]=="DV":
+        if header["type"]=="DV":
+            handle_dv_update(peer_id,header["src"], json.loads(payload), peers)
 
     else:
         # 5. 需要转发的数据包
@@ -153,8 +155,56 @@ def send_file(peer_id, dst_id, filename, peers):
         file_data = f.read()
     file_size = len(file_data)
     total_segments = math.ceil(file_size / SEGMENT_SIZE)
+    segments={}
+    for seq in range(total_segments):
+        start = seq * SEGMENT_SIZE
+        end = start + SEGMENT_SIZE
+        segment_data = file_data[start:end]
+        segments[seq] = segment_data
 
     print(f"开始发送文件 {filename} (大小: {file_size} 字节, 共 {total_segments} 段)")
+    #滑动窗口传输
+    base = 0  # 窗口起始序号
+    next_seq = 0  # 下一个要发送的序号
+    window_size = min(WINDOW_SIZE, total_segments)  # 动态窗口大小
+    while base < total_segments:
+        # 2.1 发送窗口内的所有段
+        while next_seq < min(base+window_size,total_segments):
+            send_segment(peer_id,dst_id,segments[next_seq],next_seq,peers,total=total_segments)
+            print(f"[{peer_id}] 发送段 {next_seq}/{total_segments - 1} (窗口: {base}-{base + window_size - 1})")
+            next_seq += 1
+
+        #等待ack或超时
+        start_time = time.time()
+        while True:
+            with lock:
+                # 1. 确定窗口内的序列号范围
+                start = base
+                end = min(base + window_size, total_segments)
+                seq_range = range(start, end)
+                # 2. 对每个序列号进行检查
+                checks = []
+                for seq in seq_range:
+                    # 检查该序列号是否不在未确认字典中
+                    is_acked = seq not in unacked_segments
+                    checks.append(is_acked)
+                # 3. 判断是否全部已确认
+                acked_in_window = all(checks)
+            if acked_in_window:
+                base += window_size
+                window_size = min(WINDOW_SIZE, total_segments - base)  # 动态调整窗口
+                print(f"[{peer_id}] 窗口推进至 {base}-{base + window_size - 1}")
+                break
+
+            # 超时处理
+            if time.time() - start_time > ACK_TIMEOUT:
+                print(f"[{peer_id}] 窗口 {base}-{base + window_size - 1} 确认超时，重传...")
+                next_seq = base  # 回退到窗口起始位置重传
+                break
+            time.sleep(0.01)  # 避免CPU忙等待
+            # 3. 传输完成
+            print(f"[{peer_id}] 文件 {filename} 所有段发送完成")
+            return True
 
 
 def send_segment(peer_id, dst_id, segment, seq, peers, is_retry=False, total=-1):
