@@ -51,18 +51,28 @@ def load_config():
 #peer_id: 当前节点的标识符
 #peers: 用于存储节点信息的字典
 def listen(peer_id, ip, port, peers):
-    # TODO: Create a UDP socket, bind it, and listen for incoming packets
-    udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    server_address = (ip, port)
-    udp_socket.bind(server_address)
-    print(f"节点 {peer_id} 正在监听 {ip}:{port}")
-    #接收数据
-    while True:
-        data, address = udp_socket.recvfrom(1024)
-        message = json.loads(data.decode('utf-8'))
-        sender_id = message.get('peer_id')
-        if (sender_id not in peers and sender_id != peer_id):
-            peers[sender_id] =[ip, port]
+    try:
+        # 创建 UDP socket
+        udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        # 尝试绑定到指定 IP 和端口
+        server_address = (ip, port)
+        print(f"[{peer_id}] 尝试绑定到 {ip}:{port}...")
+        udp_socket.bind(server_address)
+        print(f"[{peer_id}] 成功监听 {ip}:{port}")
+
+        while True:
+            data, address = udp_socket.recvfrom(1024)
+            try:
+                message = json.loads(data.decode('utf-8'))
+                sender_id = message.get('peer_id')
+                if sender_id not in peers and sender_id != peer_id:
+                    peers[sender_id] = list(address)  # 记录新节点
+                    print(f"[{peer_id}] 发现新节点: {sender_id}@{address}")
+            except json.JSONDecodeError:
+                print(f"[{peer_id}] 收到无效数据包")
+    except Exception as e:
+        print(f"[{peer_id}] 监听失败: {str(e)}")
+        raise
 
 def handle_packet(data, addr, peer_id, peers):
     header, payload = parse_packet(data)
@@ -156,11 +166,7 @@ def send_file(peer_id, dst_id, filename, peers):
     file_size = len(file_data)
     total_segments = math.ceil(file_size / SEGMENT_SIZE)
     segments={}
-    for seq in range(total_segments):
-        start = seq * SEGMENT_SIZE
-        end = start + SEGMENT_SIZE
-        segment_data = file_data[start:end]
-        segments[seq] = segment_data
+
 
     print(f"开始发送文件 {filename} (大小: {file_size} 字节, 共 {total_segments} 段)")
     #滑动窗口传输
@@ -170,7 +176,8 @@ def send_file(peer_id, dst_id, filename, peers):
     while base < total_segments:
         # 2.1 发送窗口内的所有段
         while next_seq < min(base+window_size,total_segments):
-            send_segment(peer_id,dst_id,segments[next_seq],next_seq,peers,total=total_segments)
+            segment = file_data[next_seq * SEGMENT_SIZE:(next_seq + 1) * SEGMENT_SIZE]
+            send_segment(peer_id,dst_id,segment,next_seq,peers,total=total_segments)
             print(f"[{peer_id}] 发送段 {next_seq}/{total_segments - 1} (窗口: {base}-{base + window_size - 1})")
             next_seq += 1
 
@@ -209,7 +216,8 @@ def send_file(peer_id, dst_id, filename, peers):
 
 def send_segment(peer_id, dst_id, segment, seq, peers, is_retry=False, total=-1):
     # TODO: Send a segment to the next hop using the local DV
-    next_hop=get_next_hop(peer_id, peers[peer_id])
+    next_hop=get_next_hop(peer_id, dst_id)
+    print(next_hop)
     packet = make_packet(
         pkt_type="DATA",
         seq=seq,
@@ -220,13 +228,14 @@ def send_segment(peer_id, dst_id, segment, seq, peers, is_retry=False, total=-1)
         payload=segment
     )
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.sendto(packet, next_hop)
+    sock.sendto(packet, tuple(peers[next_hop]))
     sock.close()
 
+    key=(dst_id, seq)
     if not is_retry:
         with lock:
-            unacked_segments[seq] = (time.time(), packet)
-            retry_counts[seq] = 0
+            unacked_segments[key] = (time.time(), packet)
+            retry_counts[key] = 0
 
 # --- Segment Retransmission ---
 def ack_timekeeping(peer_id, dst_id, segment, seq, peers, total):
@@ -386,33 +395,19 @@ def routes_print(peer_id):
 
 def get_next_hop(peer_id, dst):
     # TODO: Lookup the next hop for a given destination based on the local DV
-    if dst == peer_id:
-        return None     #local delivery
-
     with dv_lock:
-        if peer_id not in distance_vector or dst not in distance_vector[peer_id]:
-            return None
-
-        min_cost=distance_vector[peer_id][dst]
-        if min_cost == float('inf'):
-            return None
-        # Find which neighbor provides the minimum cost path
-        for neighbor in link_costs[peer_id]:
-            if (dst in neighbor_dv_tables.get(neighbor, {}) and
-                link_costs[peer_id][neighbor] + neighbor_dv_tables[neighbor][dst] == min_cost):
-                return neighbor
-        return None
+        return distance_vector.get(dst, (None, None))[1]
 
 def cost_update_thread(peer_id, peers):
     while True:
         time.sleep(COST_UPDATE_INTERVAL)
         # TODO: Randomly change link costs and recompute DV
         with dv_lock:
-            for neighbor in list(link_costs[peer_id]):
+            for neighbor in list(link_costs):
                 if random.random()<0.3:     #30% chance to change a link cost
-                    old_cost = link_costs[peer_id][neighbor]
+                    old_cost = link_costs[neighbor]
                     new_cost = max(1, old_cost * random.uniform(0.5, 1.5))
-                    link_costs[peer_id][neighbor] = new_cost
+                    link_costs[neighbor] = new_cost
                     print(f"[{peer_id}] Updated cost to {neighbor}: {old_cost} -> {new_cost}")
 
             # Trigger DV recomputation
@@ -433,8 +428,9 @@ def main():
     ip, port = config["peers"][peer_id]
     peers = config["peers"]
     global link_costs
-    link_costs = config["links"][peer_id]
-    distance_vector[peer_id] = {peer_id: (0, peer_id)}
+    link_costs = config["links"][peer_id]     #结构类似：{"Peer2": 1,"Peer3": 3}
+    distance_vector[peer_id] = (0, peer_id)
+    print(link_costs,distance_vector)
 
     print(f"[{peer_id}] Starting...")
     os.makedirs(os.path.join(RECV_DIR, peer_id), exist_ok=True)
