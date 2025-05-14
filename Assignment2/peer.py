@@ -307,11 +307,32 @@ def handle_dv_update(peer_id, neighbor, dv_data, peers):
 
 def broadcast_dv(peer_id, peers):
     # TODO: Broadcast DV to neighbors
-    pass
+    with dv_lock:
+        if peer_id not in distance_vector:
+            return
+        for neighbor in link_costs[peer_id]:
+            print(f"[{peer_id}] Broadcasting DV to {neighbor}: {distance_vector[peer_id]}")
 
 def routes_print(peer_id):
     # TODO: Print routes to other peers
-    pass
+    with dv_lock:
+        if peer_id not in distance_vector:
+            print(f"[{peer_id}] No routing information available")
+            return
+        print(f"\nRouting table for {peer_id}:")
+        print("{:<15} {:<10} {:<15}".format("Destination", "Cost", "Next Hop"))
+        print("-" * 40)
+
+        for dest, cost in distance_vector[peer_id].items():
+            if dest==peer_id:
+                continue
+            next_hop = get_next_hop(peer_id, dest)
+            print("{:<15} {:<10} {:<15}".format(
+                dest,
+                cost if cost != float('inf') else "∞",
+                next_hop if next_hop else "Unreachable"
+            ))
+
 
 def get_next_hop(peer_id, dst):
     # TODO: Lookup the next hop for a given destination based on the local DV
