@@ -273,8 +273,37 @@ def send_ack(dst, src, seq, peers):
 # --- Distance Vector Routing ---
 def handle_dv_update(peer_id, neighbor, dv_data, peers):
     # TODO: Apply Bellman-Ford updates to update the local DV after receiving DV estimates from neighbours.
+    with dv_lock:
+        #如果distancevector没有初始化
+        if peer_id not in distance_vector:
+            distance_vector[peer_id] = {peer_id:0}
+            for n in peers:
+                if n != peer_id:
+                    distance_vector[peer_id][n]=float('inf')
+        neighbor_dv_tables[neighbor]=dv_data
+
+        updated=False
+        for dest in distance_vector[peer_id]:
+            if dest == peer_id:
+                continue
+
+            # Find minimum cost across all neighbors
+            min_cost = float('inf')
+            for n in link_costs[peer_id]:
+                if dest in neighbor_dv_tables.get(n, {}):
+                    total_cost = link_costs[peer_id][n] + neighbor_dv_tables[n][dest]
+                    if total_cost < min_cost:
+                        min_cost = total_cost
+
+            # Update if found better path
+            if min_cost != distance_vector[peer_id][dest]:
+                distance_vector[peer_id][dest] = min_cost
+                updated = True
+
     # Then, broadcast the local DV to neighbours if it is changed.
-    pass
+        if updated:
+            broadcast_dv(peer_id, peers)
+
 
 def broadcast_dv(peer_id, peers):
     # TODO: Broadcast DV to neighbors
