@@ -336,14 +336,39 @@ def routes_print(peer_id):
 
 def get_next_hop(peer_id, dst):
     # TODO: Lookup the next hop for a given destination based on the local DV
+    if dst == peer_id:
+        return None     #local delivery
 
-    pass
+    with dv_lock:
+        if peer_id not in distance_vector or dst not in distance_vector[peer_id]:
+            return None
+
+        min_cost=distance_vector[peer_id][dst]
+        if min_cost == float('inf'):
+            return None
+        # Find which neighbor provides the minimum cost path
+        for neighbor in link_costs[peer_id]:
+            if (dst in neighbor_dv_tables.get(neighbor, {}) and
+                link_costs[peer_id][neighbor] + neighbor_dv_tables[neighbor][dst] == min_cost):
+                return neighbor
+        return None
 
 def cost_update_thread(peer_id, peers):
     while True:
         time.sleep(COST_UPDATE_INTERVAL)
         # TODO: Randomly change link costs and recompute DV
-        pass
+        with dv_lock:
+            for neighbor in list(link_costs[peer_id]):
+                if random.random()<0.3:     #30% chance to change a link cost
+                    old_cost = link_costs[peer_id][neighbor]
+                    new_cost = max(1, old_cost * random.uniform(0.5, 1.5))
+                    link_costs[peer_id][neighbor] = new_cost
+                    print(f"[{peer_id}] Updated cost to {neighbor}: {old_cost} -> {new_cost}")
+
+            # Trigger DV recomputation
+            for neighbor in neighbor_dv_tables:
+                # Simulate receiving DVs from neighbors again
+                handle_dv_update(peer_id, neighbor, neighbor_dv_tables[neighbor], peers)
 
 # --- Main Function ---
 def main():
