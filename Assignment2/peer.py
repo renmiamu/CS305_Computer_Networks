@@ -93,7 +93,6 @@ def send_file(peer_id, dst_id, filename, peers):
     total_segments = math.ceil(len(data) / SEGMENT_SIZE)
     base = 0
     next_seq = 0
-
     while base < total_segments:
         while next_seq < min(base + WINDOW_SIZE, total_segments):
             segment = data[next_seq*SEGMENT_SIZE:(next_seq+1)*SEGMENT_SIZE]
